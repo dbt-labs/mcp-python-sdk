@@ -17,5 +17,9 @@ class ToolError(FastMCPError):
     """Error in tool operations."""
 
 
+class ToolNotFoundError(ToolError):
+    """Tool not found."""
+
+
 class InvalidSignature(Exception):
     """Invalid signature for use with FastMCP."""
