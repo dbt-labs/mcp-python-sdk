@@ -3,7 +3,7 @@ from __future__ import annotations as _annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.fastmcp.exceptions import ToolNotFoundError
 from mcp.server.fastmcp.tools.base import Tool
 from mcp.server.fastmcp.utilities.logging import get_logger
 from mcp.shared.context import LifespanContextT, RequestT
@@ -75,7 +75,7 @@ class ToolManager:
     def remove_tool(self, name: str) -> None:
         """Remove a tool by name."""
         if name not in self._tools:
-            raise ToolError(f"Unknown tool: {name}")
+            raise ToolNotFoundError(f"Unknown tool: {name}")
         del self._tools[name]
 
     async def call_tool(
@@ -88,6 +88,6 @@ class ToolManager:
         """Call a tool by name with arguments."""
         tool = self.get_tool(name)
         if not tool:
-            raise ToolError(f"Unknown tool: {name}")
+            raise ToolNotFoundError(f"Unknown tool: {name}")
 
         return await tool.run(arguments, context=context, convert_result=convert_result)
