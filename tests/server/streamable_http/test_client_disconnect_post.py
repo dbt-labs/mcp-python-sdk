@@ -86,8 +86,9 @@ class TestClientDisconnectDuringPOST:
         )
 
     @pytest.mark.anyio
-    async def test_client_disconnect_does_not_send_response(self):
-        """After ClientDisconnect, no response should be sent (socket is closed)."""
+    async def test_client_disconnect_sends_response(self):
+        """After ClientDisconnect, a 202 response is sent so middleware chains don't
+        raise 'No response returned' (ASGI server drops it if socket is closed)."""
         transport = StreamableHTTPServerTransport(mcp_session_id=None)
         scope = self._make_scope()
 
@@ -116,10 +117,13 @@ class TestClientDisconnectDuringPOST:
             scope, mock_request, dummy_receive, dummy_send
         )
 
-        # No HTTP response should be sent to the closed socket
-        assert len(send_calls) == 0, (
-            f"Expected no ASGI sends after ClientDisconnect, got {len(send_calls)}"
+        # A response IS sent (202 Accepted) so middleware chains don't blow up
+        assert len(send_calls) >= 1, (
+            f"Expected at least 1 ASGI send (response), got {len(send_calls)}"
         )
+        # First send should be http.response.start with 202
+        assert send_calls[0]["type"] == "http.response.start"
+        assert send_calls[0]["status"] == 202
 
     @pytest.mark.anyio
     async def test_client_disconnect_notifies_writer(self):
@@ -193,7 +197,9 @@ class TestClientDisconnectDuringPOST:
                 scope, mock_request, dummy_receive, dummy_send
             )
 
-        # The broken writer.send was called once
+        # The broken writer.send was called once (suppressed)
         broken_send.assert_called_once()
-        # No response was sent (socket is closed)
-        assert len(send_calls) == 0
+        # Response is still sent even though writer was broken
+        assert len(send_calls) >= 1
+        assert send_calls[0]["type"] == "http.response.start"
+        assert send_calls[0]["status"] == 202
