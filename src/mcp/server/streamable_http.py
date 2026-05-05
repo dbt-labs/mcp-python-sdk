@@ -654,7 +654,8 @@ class StreamableHTTPServerTransport:
             if writer is not None:
                 with suppress(Exception):
                     await writer.send(ClientDisconnect())
-            response = self._create_json_response(None, HTTPStatus.ACCEPTED)
+            # 499 = Client Closed Request (nginx convention, not in stdlib HTTPStatus)
+            response = self._create_json_response(None, 499)  # type: ignore[arg-type]
             with suppress(Exception):
                 await response(scope, receive, send)
             return

@@ -121,9 +121,9 @@ class TestClientDisconnectDuringPOST:
         assert len(send_calls) >= 1, (
             f"Expected at least 1 ASGI send (response), got {len(send_calls)}"
         )
-        # First send should be http.response.start with 202
+        # First send should be http.response.start with 499 (Client Closed Request)
         assert send_calls[0]["type"] == "http.response.start"
-        assert send_calls[0]["status"] == 202
+        assert send_calls[0]["status"] == 499
 
     @pytest.mark.anyio
     async def test_client_disconnect_notifies_writer(self):
@@ -202,4 +202,4 @@ class TestClientDisconnectDuringPOST:
         # Response is still sent even though writer was broken
         assert len(send_calls) >= 1
         assert send_calls[0]["type"] == "http.response.start"
-        assert send_calls[0]["status"] == 202
+        assert send_calls[0]["status"] == 499
