@@ -445,7 +445,7 @@ async def test_stateless_get_returns_405():
 
     error_data = json.loads(response_body)
     assert error_data["jsonrpc"] == "2.0"
-    assert error_data["id"] is None
+    assert error_data["id"] == ""
     assert error_data["error"]["code"] == INVALID_REQUEST
     assert "GET" in error_data["error"]["message"]
     assert "stateless" in error_data["error"]["message"].lower()
@@ -464,7 +464,7 @@ async def test_stateless_delete_returns_405():
 
     error_data = json.loads(response_body)
     assert error_data["jsonrpc"] == "2.0"
-    assert error_data["id"] is None
+    assert error_data["id"] == ""
     assert error_data["error"]["code"] == INVALID_REQUEST
     assert "DELETE" in error_data["error"]["message"]
 
