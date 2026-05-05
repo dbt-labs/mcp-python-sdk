@@ -10,7 +10,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
@@ -20,7 +20,7 @@ import pydantic_core
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import ValidationError
 from sse_starlette import EventSourceResponse
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
@@ -626,6 +626,15 @@ class StreamableHTTPServerTransport:
                 finally:
                     await sse_stream_reader.aclose()
 
+        except ClientDisconnect:
+            # Client went away mid-request (network timeout, cancel, LB drop). Not a
+            # server error — log at WARNING and skip the response: the socket is gone.
+            # Notify the writer so the inner session task can unblock cleanly.
+            logger.warning("Client disconnected during POST request")
+            if writer is not None:
+                with suppress(Exception):
+                    await writer.send(ClientDisconnect())
+            return
         except Exception as err:  # pragma: no cover
             logger.exception("Error handling POST request")
             response = self._create_error_response(
