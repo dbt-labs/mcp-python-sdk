@@ -649,11 +649,8 @@ class StreamableHTTPServerTransport:
             # server error — log at WARNING and send a response so middleware chains
             # (e.g. Starlette BaseHTTPMiddleware) don't raise "No response returned".
             # The ASGI server will drop the response if the socket is already closed.
-            # Notify the writer so the inner session task can unblock cleanly.
+            # The connect() context manager will close streams, unblocking the session task.
             logger.warning("Client disconnected during POST request")
-            if writer is not None:
-                with suppress(Exception):
-                    await writer.send(ClientDisconnect())
             # 499 = Client Closed Request (nginx convention, not in stdlib HTTPStatus)
             response = self._create_json_response(None, 499)  # type: ignore[arg-type]
             with suppress(Exception):
