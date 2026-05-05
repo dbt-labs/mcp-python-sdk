@@ -703,6 +703,9 @@ class Server(Generic[LifespanResultT, RequestT]):
                         await self._handle_request(message, req, session, lifespan_context, raise_exceptions)
                 case types.ClientNotification(root=notify):
                     await self._handle_notification(notify)
+                case Exception() if "Disconnect" in type(message).__name__ or "Cancel" in type(message).__name__:  # pragma: no cover
+                    # Client went away (Disconnect) or task was cancelled — not a server error.
+                    logger.debug(f"Received {type(message).__name__} from stream")
                 case Exception():  # pragma: no cover
                     logger.error(f"Received exception from stream: {message}")
                     await session.send_log_message(

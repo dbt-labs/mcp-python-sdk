@@ -654,8 +654,9 @@ class StreamableHTTPServerTransport:
             if writer is not None:
                 with suppress(Exception):
                     await writer.send(ClientDisconnect())
-            # 499 = Client Closed Request (nginx convention, not in stdlib HTTPStatus)
-            response = self._create_json_response(None, 499)  # type: ignore[arg-type]
+            # 499 = Client Closed Request (nginx convention, not in stdlib HTTPStatus).
+            # Build Response directly to avoid _create_json_response's HTTPStatus type hint.
+            response = Response(content=b"", status_code=499, media_type=CONTENT_TYPE_JSON)
             with suppress(Exception):
                 await response(scope, receive, send)
             return
