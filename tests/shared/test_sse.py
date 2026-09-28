@@ -469,8 +469,6 @@ async def test_request_context_propagation(context_server: None, server_url: str
 @pytest.mark.anyio
 async def test_request_context_isolation(context_server: None, server_url: str) -> None:
     """Test that request contexts are isolated between different SSE clients."""
-    contexts: list[dict[str, Any]] = []
-
     # Create multiple clients with different headers
     for i in range(3):
         headers = {"X-Request-Id": f"request-{i}", "X-Custom-Value": f"value-{i}"}
@@ -489,14 +487,9 @@ async def test_request_context_isolation(context_server: None, server_url: str) 
                 context_data = json.loads(
                     tool_result.content[0].text if tool_result.content[0].type == "text" else "{}"
                 )
-                contexts.append(context_data)
-
-    # Verify each request had its own context
-    assert len(contexts) == 3
-    for i, ctx in enumerate(contexts):
-        assert ctx["request_id"] == f"request-{i}"
-        assert ctx["headers"].get("x-request-id") == f"request-{i}"
-        assert ctx["headers"].get("x-custom-value") == f"value-{i}"
+                assert context_data["request_id"] == f"request-{i}"
+                assert context_data["headers"].get("x-request-id") == f"request-{i}"
+                assert context_data["headers"].get("x-custom-value") == f"value-{i}"
 
 
 def test_sse_message_id_coercion():
