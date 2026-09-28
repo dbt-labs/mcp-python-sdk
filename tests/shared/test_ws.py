@@ -38,10 +38,15 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 @pytest.fixture
-def server_port() -> int:
+def server_socket() -> Generator[socket.socket, None, None]:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
+
+
+@pytest.fixture
+def server_port(server_socket: socket.socket) -> int:
+    return server_socket.getsockname()[1]
 
 
 @pytest.fixture
@@ -98,11 +103,12 @@ def make_server_app() -> Starlette:  # pragma: no cover
     return app
 
 
-def run_server(server_port: int) -> None:  # pragma: no cover
+def run_server(server_socket: socket.socket) -> None:  # pragma: no cover
     app = make_server_app()
+    server_port = server_socket.getsockname()[1]
     server = uvicorn.Server(config=uvicorn.Config(app=app, host="127.0.0.1", port=server_port, log_level="error"))
     print(f"starting server on {server_port}")
-    server.run()
+    server.run(sockets=[server_socket])
 
     # Give server time to start
     while not server.started:
@@ -111,8 +117,8 @@ def run_server(server_port: int) -> None:  # pragma: no cover
 
 
 @pytest.fixture()  # pragma: no cover
-def server(server_port: int) -> Generator[None, None, None]:
-    proc = multiprocessing.Process(target=run_server, kwargs={"server_port": server_port}, daemon=True)
+def server(server_port: int, server_socket: socket.socket) -> Generator[None, None, None]:
+    proc = multiprocessing.Process(target=run_server, kwargs={"server_socket": server_socket}, daemon=True)
     print("starting process")
     proc.start()
 

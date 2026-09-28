@@ -35,7 +35,7 @@ UNICODE_TEST_STRINGS = {
 }
 
 
-def run_unicode_server(port: int) -> None:  # pragma: no cover
+def run_unicode_server(server_socket: socket.socket) -> None:  # pragma: no cover
     """Run the Unicode test server in a separate process."""
     # Import inside the function since this runs in a separate process
     from collections.abc import AsyncGenerator
@@ -137,25 +137,34 @@ def run_unicode_server(port: int) -> None:  # pragma: no cover
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
-        port=port,
+        port=server_socket.getsockname()[1],
         log_level="error",
     )
     uvicorn_server = uvicorn.Server(config)
-    uvicorn_server.run()
+    uvicorn_server.run(sockets=[server_socket])
 
 
 @pytest.fixture
-def unicode_server_port() -> int:
-    """Find an available port for the Unicode test server."""
+def unicode_server_socket() -> Generator[socket.socket, None, None]:
+    """Reserve the Unicode test server's port until it starts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
 
 
 @pytest.fixture
-def running_unicode_server(unicode_server_port: int) -> Generator[str, None, None]:
+def unicode_server_port(unicode_server_socket: socket.socket) -> int:
+    return unicode_server_socket.getsockname()[1]
+
+
+@pytest.fixture
+def running_unicode_server(
+    unicode_server_port: int, unicode_server_socket: socket.socket
+) -> Generator[str, None, None]:
     """Start a Unicode test server in a separate process."""
-    proc = multiprocessing.Process(target=run_unicode_server, kwargs={"port": unicode_server_port}, daemon=True)
+    proc = multiprocessing.Process(
+        target=run_unicode_server, kwargs={"server_socket": unicode_server_socket}, daemon=True
+    )
     proc.start()
 
     # Wait for server to be ready
