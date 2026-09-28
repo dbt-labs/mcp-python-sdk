@@ -352,6 +352,80 @@ async def test_stateless_requests_memory_cleanup():
 
 
 @pytest.mark.anyio
+async def test_stateless_request_cancels_server_task_when_request_ends() -> None:
+    """A completed stateless request must not leave its server task running."""
+    app = Server("test-stateless-task-cleanup")
+    manager = StreamableHTTPSessionManager(app=app, stateless=True)
+    server_started = anyio.Event()
+    server_finished = anyio.Event()
+    sent_messages: list[Message] = []
+
+    async def blocked_server(*args: object, **kwargs: object) -> None:
+        server_started.set()
+        try:
+            await anyio.sleep_forever()
+        finally:
+            server_finished.set()
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        sent_messages.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"content-type", b"application/json"), (b"accept", b"application/json, text/event-stream")],
+    }
+    with patch.object(app, "run", blocked_server):
+        async with manager.run():
+            with anyio.fail_after(5):
+                await manager.handle_request(scope, receive, send)
+                await server_started.wait()
+            assert server_finished.is_set()
+
+    assert any(message["type"] == "http.response.start" for message in sent_messages)
+
+
+@pytest.mark.anyio
+async def test_stateless_stream_closes_cleanly_on_shutdown() -> None:
+    """Shutdown should send the final body chunk for an active SSE stream."""
+    manager = StreamableHTTPSessionManager(app=Server("test-stateless-shutdown"), stateless=True)
+    stream_started = anyio.Event()
+    stream_closed = anyio.Event()
+    request_received = False
+
+    async def receive() -> Message:
+        nonlocal request_received
+        if not request_received:
+            request_received = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await anyio.sleep_forever()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            stream_started.set()
+        if message["type"] == "http.response.body" and not message.get("more_body", False):
+            stream_closed.set()
+
+    scope: Scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/mcp",
+        "headers": [(b"accept", b"text/event-stream")],
+    }
+    with anyio.fail_after(5):
+        async with anyio.create_task_group() as requests:
+            async with manager.run():
+                requests.start_soon(manager.handle_request, scope, receive, send)
+                await stream_started.wait()
+            await stream_closed.wait()
+
+
+@pytest.mark.anyio
 async def test_unknown_session_id_returns_404():
     """Test that requests with unknown session IDs return HTTP 404 per MCP spec."""
     app = Server("test-unknown-session")
