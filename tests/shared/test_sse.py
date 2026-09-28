@@ -470,7 +470,7 @@ async def test_request_context_propagation(context_server: None, server_url: str
 async def test_request_context_isolation(context_server: None, server_url: str) -> None:
     """Test that request contexts are isolated between different SSE clients."""
     # Create multiple clients with different headers
-    for i in range(3):
+    for i in range(3):  # pragma: no branch - Python 3.11 coverage can miss exit after async SSE cleanup
         headers = {"X-Request-Id": f"request-{i}", "X-Custom-Value": f"value-{i}"}
 
         async with sse_client(server_url + "/sse", headers=headers) as (
