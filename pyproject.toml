@@ -88,6 +88,7 @@ source = "uv-dynamic-versioning"
 vcs = "git"
 style = "pep440"
 bump = true
+tagged-metadata = true
 
 [project.urls]
 Homepage = "https://modelcontextprotocol.io"
