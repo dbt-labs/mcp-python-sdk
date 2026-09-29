@@ -44,10 +44,15 @@ SERVER_NAME = "test_server_for_SSE"
 
 
 @pytest.fixture
-def server_port() -> int:
+def server_socket() -> Generator[socket.socket, None, None]:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
+
+
+@pytest.fixture
+def server_port(server_socket: socket.socket) -> int:
+    return server_socket.getsockname()[1]
 
 
 @pytest.fixture
@@ -111,11 +116,12 @@ def make_server_app() -> Starlette:  # pragma: no cover
     return app
 
 
-def run_server(server_port: int) -> None:  # pragma: no cover
+def run_server(server_socket: socket.socket) -> None:  # pragma: no cover
     app = make_server_app()
+    server_port = server_socket.getsockname()[1]
     server = uvicorn.Server(config=uvicorn.Config(app=app, host="127.0.0.1", port=server_port, log_level="error"))
     print(f"starting server on {server_port}")
-    server.run()
+    server.run(sockets=[server_socket])
 
     # Give server time to start
     while not server.started:
@@ -124,8 +130,8 @@ def run_server(server_port: int) -> None:  # pragma: no cover
 
 
 @pytest.fixture()
-def server(server_port: int) -> Generator[None, None, None]:
-    proc = multiprocessing.Process(target=run_server, kwargs={"server_port": server_port}, daemon=True)
+def server(server_port: int, server_socket: socket.socket) -> Generator[None, None, None]:
+    proc = multiprocessing.Process(target=run_server, kwargs={"server_socket": server_socket}, daemon=True)
     print("starting process")
     proc.start()
 
@@ -289,12 +295,13 @@ async def test_sse_client_timeout(  # pragma: no cover
     pytest.fail("the client should have timed out and returned an error already")
 
 
-def run_mounted_server(server_port: int) -> None:  # pragma: no cover
+def run_mounted_server(server_socket: socket.socket) -> None:  # pragma: no cover
     app = make_server_app()
     main_app = Starlette(routes=[Mount("/mounted_app", app=app)])
+    server_port = server_socket.getsockname()[1]
     server = uvicorn.Server(config=uvicorn.Config(app=main_app, host="127.0.0.1", port=server_port, log_level="error"))
     print(f"starting server on {server_port}")
-    server.run()
+    server.run(sockets=[server_socket])
 
     # Give server time to start
     while not server.started:
@@ -303,8 +310,8 @@ def run_mounted_server(server_port: int) -> None:  # pragma: no cover
 
 
 @pytest.fixture()
-def mounted_server(server_port: int) -> Generator[None, None, None]:
-    proc = multiprocessing.Process(target=run_mounted_server, kwargs={"server_port": server_port}, daemon=True)
+def mounted_server(server_port: int, server_socket: socket.socket) -> Generator[None, None, None]:
+    proc = multiprocessing.Process(target=run_mounted_server, kwargs={"server_socket": server_socket}, daemon=True)
     print("starting process")
     proc.start()
 
@@ -379,7 +386,7 @@ class RequestContextServer(Server[object, Request]):  # pragma: no cover
             ]
 
 
-def run_context_server(server_port: int) -> None:  # pragma: no cover
+def run_context_server(server_socket: socket.socket) -> None:  # pragma: no cover
     """Run a server that captures request context"""
     # Configure security with allowed hosts/origins for testing
     security_settings = TransportSecuritySettings(
@@ -400,15 +407,16 @@ def run_context_server(server_port: int) -> None:  # pragma: no cover
         ]
     )
 
+    server_port = server_socket.getsockname()[1]
     server = uvicorn.Server(config=uvicorn.Config(app=app, host="127.0.0.1", port=server_port, log_level="error"))
     print(f"starting context server on {server_port}")
-    server.run()
+    server.run(sockets=[server_socket])
 
 
 @pytest.fixture()
-def context_server(server_port: int) -> Generator[None, None, None]:
+def context_server(server_port: int, server_socket: socket.socket) -> Generator[None, None, None]:
     """Fixture that provides a server with request context capture"""
-    proc = multiprocessing.Process(target=run_context_server, kwargs={"server_port": server_port}, daemon=True)
+    proc = multiprocessing.Process(target=run_context_server, kwargs={"server_socket": server_socket}, daemon=True)
     print("starting context server process")
     proc.start()
 
@@ -461,10 +469,8 @@ async def test_request_context_propagation(context_server: None, server_url: str
 @pytest.mark.anyio
 async def test_request_context_isolation(context_server: None, server_url: str) -> None:
     """Test that request contexts are isolated between different SSE clients."""
-    contexts: list[dict[str, Any]] = []
-
     # Create multiple clients with different headers
-    for i in range(3):
+    for i in range(3):  # pragma: no branch - Python 3.11 coverage can miss exit after async SSE cleanup
         headers = {"X-Request-Id": f"request-{i}", "X-Custom-Value": f"value-{i}"}
 
         async with sse_client(server_url + "/sse", headers=headers) as (
@@ -481,14 +487,9 @@ async def test_request_context_isolation(context_server: None, server_url: str) 
                 context_data = json.loads(
                     tool_result.content[0].text if tool_result.content[0].type == "text" else "{}"
                 )
-                contexts.append(context_data)
-
-    # Verify each request had its own context
-    assert len(contexts) == 3
-    for i, ctx in enumerate(contexts):
-        assert ctx["request_id"] == f"request-{i}"
-        assert ctx["headers"].get("x-request-id") == f"request-{i}"
-        assert ctx["headers"].get("x-custom-value") == f"value-{i}"
+                assert context_data["request_id"] == f"request-{i}"
+                assert context_data["headers"].get("x-request-id") == f"request-{i}"
+                assert context_data["headers"].get("x-custom-value") == f"value-{i}"
 
 
 def test_sse_message_id_coercion():

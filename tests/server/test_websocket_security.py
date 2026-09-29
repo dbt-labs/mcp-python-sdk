@@ -6,6 +6,7 @@ import logging
 import multiprocessing
 import socket
 import warnings
+from collections.abc import Generator
 
 import pytest
 import uvicorn
@@ -32,13 +33,20 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 @pytest.fixture
-def server_port() -> int:
+def server_socket() -> Generator[socket.socket, None, None]:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
 
 
-def run_server_with_settings(port: int, security_settings: TransportSecuritySettings | None = None):  # pragma: no cover
+@pytest.fixture
+def server_port(server_socket: socket.socket) -> int:
+    return server_socket.getsockname()[1]
+
+
+def run_server_with_settings(
+    server_socket: socket.socket, security_settings: TransportSecuritySettings | None = None
+):  # pragma: no cover
     """Run a WebSocket MCP server with the given security settings."""
     warnings.filterwarnings("ignore", category=DeprecationWarning)
     server = Server(SERVER_NAME)
@@ -53,21 +61,23 @@ def run_server_with_settings(port: int, security_settings: TransportSecuritySett
             logger.debug(f"WebSocket connection failed validation: {exc}")
 
     app = Starlette(routes=[WebSocketRoute("/ws", endpoint=handle_ws)])
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
+    uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=server_socket.getsockname()[1], log_level="error")).run(
+        sockets=[server_socket]
+    )
 
 
-def start_server_process(port: int, security_settings: TransportSecuritySettings | None = None):
+def start_server_process(server_socket: socket.socket, security_settings: TransportSecuritySettings | None = None):
     """Start the server in a subprocess and wait until it accepts connections."""
-    process = multiprocessing.Process(target=run_server_with_settings, args=(port, security_settings))
+    process = multiprocessing.Process(target=run_server_with_settings, args=(server_socket, security_settings))
     process.start()
-    wait_for_server(port)
+    wait_for_server(server_socket.getsockname()[1])
     return process
 
 
 @pytest.mark.anyio
-async def test_ws_security_default_settings(server_port: int) -> None:
+async def test_ws_security_default_settings(server_port: int, server_socket: socket.socket) -> None:
     """With no security settings the WebSocket transport accepts any Origin (matches SSE/StreamableHTTP default)."""
-    process = start_server_process(server_port)
+    process = start_server_process(server_socket)
     try:
         async with connect(
             f"ws://127.0.0.1:{server_port}/ws",
@@ -81,12 +91,12 @@ async def test_ws_security_default_settings(server_port: int) -> None:
 
 
 @pytest.mark.anyio
-async def test_ws_security_invalid_origin_header(server_port: int) -> None:
+async def test_ws_security_invalid_origin_header(server_port: int, server_socket: socket.socket) -> None:
     """An Origin not in allowed_origins is rejected before the handshake completes."""
     settings = TransportSecuritySettings(
         enable_dns_rebinding_protection=True, allowed_hosts=["127.0.0.1:*"], allowed_origins=["http://localhost:*"]
     )
-    process = start_server_process(server_port, settings)
+    process = start_server_process(server_socket, settings)
     try:
         with pytest.raises(InvalidStatus) as exc_info:
             async with connect(
@@ -102,10 +112,10 @@ async def test_ws_security_invalid_origin_header(server_port: int) -> None:
 
 
 @pytest.mark.anyio
-async def test_ws_security_invalid_host_header(server_port: int) -> None:
+async def test_ws_security_invalid_host_header(server_port: int, server_socket: socket.socket) -> None:
     """A Host not in allowed_hosts is rejected before the handshake completes."""
     settings = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=["example.com"])
-    process = start_server_process(server_port, settings)
+    process = start_server_process(server_socket, settings)
     try:
         with pytest.raises(InvalidStatus) as exc_info:
             async with connect(f"ws://127.0.0.1:{server_port}/ws", subprotocols=[Subprotocol("mcp")]):
@@ -117,12 +127,12 @@ async def test_ws_security_invalid_host_header(server_port: int) -> None:
 
 
 @pytest.mark.anyio
-async def test_ws_security_allowed_origin(server_port: int) -> None:
+async def test_ws_security_allowed_origin(server_port: int, server_socket: socket.socket) -> None:
     """An Origin matching allowed_origins is accepted."""
     settings = TransportSecuritySettings(
         enable_dns_rebinding_protection=True, allowed_hosts=["127.0.0.1:*"], allowed_origins=["http://localhost:*"]
     )
-    process = start_server_process(server_port, settings)
+    process = start_server_process(server_socket, settings)
     try:
         async with connect(
             f"ws://127.0.0.1:{server_port}/ws",
@@ -136,10 +146,10 @@ async def test_ws_security_allowed_origin(server_port: int) -> None:
 
 
 @pytest.mark.anyio
-async def test_ws_security_disabled(server_port: int) -> None:
+async def test_ws_security_disabled(server_port: int, server_socket: socket.socket) -> None:
     """Explicitly disabling protection accepts any Origin."""
     settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    process = start_server_process(server_port, settings)
+    process = start_server_process(server_socket, settings)
     try:
         async with connect(
             f"ws://127.0.0.1:{server_port}/ws",

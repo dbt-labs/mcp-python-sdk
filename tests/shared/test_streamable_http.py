@@ -434,7 +434,7 @@ def create_app(
 
 
 def run_server(
-    port: int,
+    server_socket: socket.socket,
     is_json_response_enabled: bool = False,
     event_store: EventStore | None = None,
     retry_interval: int | None = None,
@@ -442,7 +442,7 @@ def run_server(
     """Run the test server.
 
     Args:
-        port: Port to listen on.
+        server_socket: Bound socket passed from the test process.
         is_json_response_enabled: If True, use JSON responses instead of SSE streams.
         event_store: Optional event store for testing resumability.
         retry_interval: Retry interval in milliseconds for SSE polling.
@@ -453,7 +453,7 @@ def run_server(
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
-        port=port,
+        port=server_socket.getsockname()[1],
         log_level="info",
         limit_concurrency=10,
         timeout_keep_alive=5,
@@ -465,7 +465,7 @@ def run_server(
 
     # This is important to catch exceptions and prevent test hangs
     try:
-        server.run()
+        server.run(sockets=[server_socket])
     except Exception:
         import traceback
 
@@ -474,29 +474,30 @@ def run_server(
 
 # Test fixtures - using same approach as SSE tests
 @pytest.fixture
-def basic_server_port() -> int:
-    """Find an available port for the basic server."""
+def basic_server_socket() -> Generator[socket.socket, None, None]:
+    """Reserve the basic server's port until the server starts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
 
 
 @pytest.fixture
-def json_server_port() -> int:
-    """Find an available port for the JSON response server."""
+def json_server_socket() -> Generator[socket.socket, None, None]:
+    """Reserve the JSON response server's port until the server starts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
 
 
 @pytest.fixture
-def basic_server(basic_server_port: int) -> Generator[None, None, None]:
+def basic_server(basic_server_socket: socket.socket) -> Generator[None, None, None]:
     """Start a basic server."""
-    proc = multiprocessing.Process(target=run_server, kwargs={"port": basic_server_port}, daemon=True)
+    port = basic_server_socket.getsockname()[1]
+    proc = multiprocessing.Process(target=run_server, kwargs={"server_socket": basic_server_socket}, daemon=True)
     proc.start()
 
     # Wait for server to be running
-    wait_for_server(basic_server_port)
+    wait_for_server(port)
 
     yield
 
@@ -512,29 +513,30 @@ def event_store() -> SimpleEventStore:
 
 
 @pytest.fixture
-def event_server_port() -> int:
-    """Find an available port for the event store server."""
+def event_server_socket() -> Generator[socket.socket, None, None]:
+    """Reserve the event store server's port until the server starts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
 
 
 @pytest.fixture
 def event_server(
-    event_server_port: int, event_store: SimpleEventStore
+    event_server_socket: socket.socket, event_store: SimpleEventStore
 ) -> Generator[tuple[SimpleEventStore, str], None, None]:
     """Start a server with event store and retry_interval enabled."""
+    port = event_server_socket.getsockname()[1]
     proc = multiprocessing.Process(
         target=run_server,
-        kwargs={"port": event_server_port, "event_store": event_store, "retry_interval": 500},
+        kwargs={"event_store": event_store, "retry_interval": 500, "server_socket": event_server_socket},
         daemon=True,
     )
     proc.start()
 
     # Wait for server to be running
-    wait_for_server(event_server_port)
+    wait_for_server(port)
 
-    yield event_store, f"http://127.0.0.1:{event_server_port}"
+    yield event_store, f"http://127.0.0.1:{port}"
 
     # Clean up
     proc.kill()
@@ -542,17 +544,18 @@ def event_server(
 
 
 @pytest.fixture
-def json_response_server(json_server_port: int) -> Generator[None, None, None]:
+def json_response_server(json_server_socket: socket.socket) -> Generator[None, None, None]:
     """Start a server with JSON response enabled."""
+    port = json_server_socket.getsockname()[1]
     proc = multiprocessing.Process(
         target=run_server,
-        kwargs={"port": json_server_port, "is_json_response_enabled": True},
+        kwargs={"is_json_response_enabled": True, "server_socket": json_server_socket},
         daemon=True,
     )
     proc.start()
 
     # Wait for server to be running
-    wait_for_server(json_server_port)
+    wait_for_server(port)
 
     yield
 
@@ -562,15 +565,15 @@ def json_response_server(json_server_port: int) -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def basic_server_url(basic_server_port: int) -> str:
+def basic_server_url(basic_server_socket: socket.socket) -> str:
     """Get the URL for the basic test server."""
-    return f"http://127.0.0.1:{basic_server_port}"
+    return f"http://127.0.0.1:{basic_server_socket.getsockname()[1]}"
 
 
 @pytest.fixture
-def json_server_url(json_server_port: int) -> str:
+def json_server_url(json_server_socket: socket.socket) -> str:
     """Get the URL for the JSON response test server."""
-    return f"http://127.0.0.1:{json_server_port}"
+    return f"http://127.0.0.1:{json_server_socket.getsockname()[1]}"
 
 
 # Basic request validation tests
@@ -1560,7 +1563,7 @@ class ContextAwareServerTest(Server):  # pragma: no cover
 
 
 # Server runner for context-aware testing
-def run_context_aware_server(port: int):  # pragma: no cover
+def run_context_aware_server(server_socket: socket.socket):  # pragma: no cover
     """Run the context-aware test server."""
     server = ContextAwareServerTest()
 
@@ -1582,21 +1585,22 @@ def run_context_aware_server(port: int):  # pragma: no cover
         config=uvicorn.Config(
             app=app,
             host="127.0.0.1",
-            port=port,
+            port=server_socket.getsockname()[1],
             log_level="error",
         )
     )
-    server_instance.run()
+    server_instance.run(sockets=[server_socket])
 
 
 @pytest.fixture
-def context_aware_server(basic_server_port: int) -> Generator[None, None, None]:
+def context_aware_server(basic_server_socket: socket.socket) -> Generator[None, None, None]:
     """Start the context-aware server in a separate process."""
-    proc = multiprocessing.Process(target=run_context_aware_server, args=(basic_server_port,), daemon=True)
+    port = basic_server_socket.getsockname()[1]
+    proc = multiprocessing.Process(target=run_context_aware_server, args=(basic_server_socket,), daemon=True)
     proc.start()
 
     # Wait for server to be running
-    wait_for_server(basic_server_port)
+    wait_for_server(port)
 
     yield
 

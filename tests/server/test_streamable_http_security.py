@@ -3,7 +3,7 @@
 import logging
 import multiprocessing
 import socket
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 
 import httpx
@@ -24,10 +24,15 @@ SERVER_NAME = "test_streamable_http_security_server"
 
 
 @pytest.fixture
-def server_port() -> int:
+def server_socket() -> Generator[socket.socket, None, None]:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
+
+
+@pytest.fixture
+def server_port(server_socket: socket.socket) -> int:
+    return server_socket.getsockname()[1]
 
 
 @pytest.fixture
@@ -43,7 +48,9 @@ class SecurityTestServer(Server):  # pragma: no cover
         return []
 
 
-def run_server_with_settings(port: int, security_settings: TransportSecuritySettings | None = None):  # pragma: no cover
+def run_server_with_settings(
+    server_socket: socket.socket, security_settings: TransportSecuritySettings | None = None
+):  # pragma: no cover
     """Run the StreamableHTTP server with specified security settings."""
     app = SecurityTestServer()
 
@@ -70,22 +77,25 @@ def run_server_with_settings(port: int, security_settings: TransportSecuritySett
     ]
 
     starlette_app = Starlette(routes=routes, lifespan=lifespan)
-    uvicorn.run(starlette_app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(
+        uvicorn.Config(starlette_app, host="127.0.0.1", port=server_socket.getsockname()[1], log_level="error")
+    )
+    server.run(sockets=[server_socket])
 
 
-def start_server_process(port: int, security_settings: TransportSecuritySettings | None = None):
+def start_server_process(server_socket: socket.socket, security_settings: TransportSecuritySettings | None = None):
     """Start server in a separate process."""
-    process = multiprocessing.Process(target=run_server_with_settings, args=(port, security_settings))
+    process = multiprocessing.Process(target=run_server_with_settings, args=(server_socket, security_settings))
     process.start()
     # Wait for server to be ready to accept connections
-    wait_for_server(port)
+    wait_for_server(server_socket.getsockname()[1])
     return process
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_default_settings(server_port: int):
+async def test_streamable_http_security_default_settings(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP with default security settings (protection enabled)."""
-    process = start_server_process(server_port)
+    process = start_server_process(server_socket)
 
     try:
         # Test with valid localhost headers
@@ -108,10 +118,10 @@ async def test_streamable_http_security_default_settings(server_port: int):
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_invalid_host_header(server_port: int):
+async def test_streamable_http_security_invalid_host_header(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP with invalid Host header."""
     security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=True)
-    process = start_server_process(server_port, security_settings)
+    process = start_server_process(server_socket, security_settings)
 
     try:
         # Test with invalid host header
@@ -136,10 +146,10 @@ async def test_streamable_http_security_invalid_host_header(server_port: int):
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_invalid_origin_header(server_port: int):
+async def test_streamable_http_security_invalid_origin_header(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP with invalid Origin header."""
     security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=["127.0.0.1:*"])
-    process = start_server_process(server_port, security_settings)
+    process = start_server_process(server_socket, security_settings)
 
     try:
         # Test with invalid origin header
@@ -164,9 +174,9 @@ async def test_streamable_http_security_invalid_origin_header(server_port: int):
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_invalid_content_type(server_port: int):
+async def test_streamable_http_security_invalid_content_type(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP POST with invalid Content-Type header."""
-    process = start_server_process(server_port)
+    process = start_server_process(server_socket)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -197,10 +207,10 @@ async def test_streamable_http_security_invalid_content_type(server_port: int):
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_disabled(server_port: int):
+async def test_streamable_http_security_disabled(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP with security disabled."""
     settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    process = start_server_process(server_port, settings)
+    process = start_server_process(server_socket, settings)
 
     try:
         # Test with invalid host header - should still work
@@ -225,14 +235,14 @@ async def test_streamable_http_security_disabled(server_port: int):
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_custom_allowed_hosts(server_port: int):
+async def test_streamable_http_security_custom_allowed_hosts(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP with custom allowed hosts."""
     settings = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=["localhost", "127.0.0.1", "custom.host"],
         allowed_origins=["http://localhost", "http://127.0.0.1", "http://custom.host"],
     )
-    process = start_server_process(server_port, settings)
+    process = start_server_process(server_socket, settings)
 
     try:
         # Test with custom allowed host
@@ -256,10 +266,10 @@ async def test_streamable_http_security_custom_allowed_hosts(server_port: int):
 
 
 @pytest.mark.anyio
-async def test_streamable_http_security_get_request(server_port: int):
+async def test_streamable_http_security_get_request(server_port: int, server_socket: socket.socket):
     """Test StreamableHTTP GET request with security."""
     security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=["127.0.0.1"])
-    process = start_server_process(server_port, security_settings)
+    process = start_server_process(server_socket, security_settings)
 
     try:
         # Test GET request with invalid host header

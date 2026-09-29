@@ -67,31 +67,38 @@ def create_non_sdk_server_app() -> Starlette:  # pragma: no cover
     return app
 
 
-def run_non_sdk_server(port: int) -> None:  # pragma: no cover
+def run_non_sdk_server(server_socket: socket.socket) -> None:  # pragma: no cover
     """Run the non-SDK server in a separate process."""
     app = create_non_sdk_server_app()
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
-        port=port,
+        port=server_socket.getsockname()[1],
         log_level="error",  # Reduce noise in tests
     )
     server = uvicorn.Server(config=config)
-    server.run()
+    server.run(sockets=[server_socket])
 
 
 @pytest.fixture
-def non_sdk_server_port() -> int:
-    """Get an available port for the test server."""
+def non_sdk_server_socket() -> Generator[socket.socket, None, None]:
+    """Reserve the test server's port until it starts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
 
 
 @pytest.fixture
-def non_sdk_server(non_sdk_server_port: int) -> Generator[None, None, None]:
+def non_sdk_server_port(non_sdk_server_socket: socket.socket) -> int:
+    return non_sdk_server_socket.getsockname()[1]
+
+
+@pytest.fixture
+def non_sdk_server(non_sdk_server_port: int, non_sdk_server_socket: socket.socket) -> Generator[None, None, None]:
     """Start a non-SDK server for testing."""
-    proc = multiprocessing.Process(target=run_non_sdk_server, kwargs={"port": non_sdk_server_port}, daemon=True)
+    proc = multiprocessing.Process(
+        target=run_non_sdk_server, kwargs={"server_socket": non_sdk_server_socket}, daemon=True
+    )
     proc.start()
 
     # Wait for server to be ready

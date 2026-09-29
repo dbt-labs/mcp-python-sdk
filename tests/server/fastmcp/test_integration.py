@@ -88,11 +88,16 @@ class NotificationCollector:
 
 # Common fixtures
 @pytest.fixture
-def server_port() -> int:
-    """Get a free port for testing."""
+def server_socket() -> Generator[socket.socket, None, None]:
+    """Reserve a port for the test server until it starts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        yield s
+
+
+@pytest.fixture
+def server_port(server_socket: socket.socket) -> int:
+    return server_socket.getsockname()[1]
 
 
 @pytest.fixture
@@ -101,7 +106,9 @@ def server_url(server_port: int) -> str:
     return f"http://127.0.0.1:{server_port}"
 
 
-def run_server_with_transport(module_name: str, port: int, transport: str) -> None:  # pragma: no cover
+def run_server_with_transport(
+    module_name: str, server_socket: socket.socket, transport: str
+) -> None:  # pragma: no cover
     """Run server with specified transport."""
     # Get the MCP instance based on module name
     if module_name == "basic_tool":
@@ -135,13 +142,17 @@ def run_server_with_transport(module_name: str, port: int, transport: str) -> No
     else:
         raise ValueError(f"Invalid transport for test server: {transport}")
 
-    server = uvicorn.Server(config=uvicorn.Config(app=app, host="127.0.0.1", port=port, log_level="error"))
-    print(f"Starting {transport} server on port {port}")
-    server.run()
+    server = uvicorn.Server(
+        config=uvicorn.Config(app=app, host="127.0.0.1", port=server_socket.getsockname()[1], log_level="error")
+    )
+    print(f"Starting {transport} server on port {server_socket.getsockname()[1]}")
+    server.run(sockets=[server_socket])
 
 
 @pytest.fixture
-def server_transport(request: pytest.FixtureRequest, server_port: int) -> Generator[str, None, None]:
+def server_transport(
+    request: pytest.FixtureRequest, server_port: int, server_socket: socket.socket
+) -> Generator[str, None, None]:
     """Start server in a separate process with specified MCP instance and transport.
 
     Args:
@@ -155,7 +166,7 @@ def server_transport(request: pytest.FixtureRequest, server_port: int) -> Genera
 
     proc = multiprocessing.Process(
         target=run_server_with_transport,
-        args=(module_name, server_port, transport),
+        args=(module_name, server_socket, transport),
         daemon=True,
     )
     proc.start()

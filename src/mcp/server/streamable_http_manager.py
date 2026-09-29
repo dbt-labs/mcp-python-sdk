@@ -121,6 +121,7 @@ class StreamableHTTPSessionManager:
         # Session tracking (only used if not stateless)
         self._session_creation_lock = anyio.Lock()
         self._server_instances: dict[str, StreamableHTTPServerTransport] = {}
+        self._stateless_transports: set[StreamableHTTPServerTransport] = set()
         # Identity of the credential that created each session; requests for a
         # session must present the same credential.
         self._session_owners: dict[str, AuthorizationContext] = {}
@@ -166,11 +167,19 @@ class StreamableHTTPSessionManager:
                 yield  # Let the application run
             finally:
                 logger.info("StreamableHTTP session manager shutting down")
+                # Close in-flight streams before cancelling the manager. This
+                # lets SSE responses send their final HTTP body chunk.
+                for transport in (*self._server_instances.values(), *self._stateless_transports):
+                    try:
+                        await transport.terminate()
+                    except Exception:  # pragma: no cover
+                        logger.debug("Error terminating transport during shutdown", exc_info=True)
                 # Cancel task group to stop all spawned tasks
                 tg.cancel_scope.cancel()
                 self._task_group = None
                 # Clear any remaining server instances
                 self._server_instances.clear()
+                self._stateless_transports.clear()
                 self._session_owners.clear()
 
     async def handle_request(
@@ -244,15 +253,20 @@ class StreamableHTTPSessionManager:
                 except Exception:  # pragma: no cover
                     logger.exception("Stateless session crashed")
 
-        # The per-request server task only ends once the transport is
-        # terminated, so terminate it even if the request was cancelled.
-        assert self._task_group is not None
+        self._stateless_transports.add(http_transport)
         try:
-            await self._task_group.start(run_stateless_server)
-            await http_transport.handle_request(scope, receive, send)
+            # A request-scoped group ensures its server task cannot outlive a
+            # disconnected client and accumulate in the manager's task group.
+            async with anyio.create_task_group() as request_tg:
+                try:
+                    await request_tg.start(run_stateless_server)
+                    await http_transport.handle_request(scope, receive, send)
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await http_transport.terminate()
+                    request_tg.cancel_scope.cancel()
         finally:
-            with anyio.CancelScope(shield=True):
-                await http_transport.terminate()
+            self._stateless_transports.discard(http_transport)
 
     async def _handle_stateful_request(
         self,
