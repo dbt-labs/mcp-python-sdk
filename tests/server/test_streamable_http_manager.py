@@ -352,6 +352,73 @@ async def test_stateless_requests_memory_cleanup():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+async def test_stateless_http_rejects_session_methods(method: str) -> None:
+    """Stateless HTTP has no standalone SSE stream or session to terminate."""
+    manager = StreamableHTTPSessionManager(app=Server("test-stateless-methods"), stateless=True)
+    sent: list[Message] = []
+
+    async def receive() -> Message:
+        raise AssertionError("GET and DELETE must not read a request body")  # pragma: no cover
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "method": method,
+        "path": "/mcp",
+        "headers": [
+            (b"accept", b"application/json, text/event-stream"),
+            (b"content-length", b"999999999"),
+        ],
+    }
+    async with manager.run():
+        with anyio.fail_after(5):
+            await manager.handle_request(scope, receive, send)
+
+    response = next(message for message in sent if message["type"] == "http.response.start")
+    assert response["status"] == 405
+    assert (b"allow", b"POST") in response["headers"]
+    body = b"".join(message.get("body", b"") for message in sent if message["type"] == "http.response.body")
+    error = json.loads(body)
+    assert error["jsonrpc"] == "2.0"
+    assert error["id"] == ""
+    assert error["error"]["code"] == INVALID_REQUEST
+    assert error["error"]["message"] == f"Method Not Allowed: {method} is not supported in stateless mode"
+
+
+@pytest.mark.anyio
+async def test_disconnected_stateless_post_returns_client_closed_request(caplog: pytest.LogCaptureFixture) -> None:
+    """A client leaving before its POST body arrives is not a server error."""
+    manager = StreamableHTTPSessionManager(app=Server("test-disconnected-post"), stateless=True)
+    sent: list[Message] = []
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+    }
+    async with manager.run():
+        with anyio.fail_after(5):
+            await manager.handle_request(scope, receive, send)
+
+    response = next(message for message in sent if message["type"] == "http.response.start")
+    assert response["status"] == 499
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+@pytest.mark.anyio
 async def test_stateless_request_cancels_server_task_when_request_ends() -> None:
     """A completed stateless request must not leave its server task running."""
     app = Server("test-stateless-task-cleanup")
@@ -391,37 +458,50 @@ async def test_stateless_request_cancels_server_task_when_request_ends() -> None
 
 @pytest.mark.anyio
 async def test_stateless_stream_closes_cleanly_on_shutdown() -> None:
-    """Shutdown should send the final body chunk for an active SSE stream."""
-    manager = StreamableHTTPSessionManager(app=Server("test-stateless-shutdown"), stateless=True)
+    """Shutdown should close an active stateless POST response stream."""
+    app = Server("test-stateless-shutdown")
+    tool_started = anyio.Event()
+
+    @app.call_tool()
+    async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+        tool_started.set()
+        await anyio.sleep_forever()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    manager = StreamableHTTPSessionManager(app=app, stateless=True)
     stream_started = anyio.Event()
     stream_closed = anyio.Event()
     request_received = False
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "slow", "arguments": {}}}
+    ).encode()
 
     async def receive() -> Message:
         nonlocal request_received
         if not request_received:
             request_received = True
-            return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.request", "body": body, "more_body": False}
         await anyio.sleep_forever()
         raise AssertionError("unreachable")  # pragma: no cover
 
     async def send(message: Message) -> None:
-        if message["type"] == "http.response.start":
+        if message["type"] == "http.response.start" and message["status"] == 200:
             stream_started.set()
         if message["type"] == "http.response.body" and not message.get("more_body", False):
             stream_closed.set()
 
     scope: Scope = {
         "type": "http",
-        "method": "GET",
+        "method": "POST",
         "path": "/mcp",
-        "headers": [(b"accept", b"text/event-stream")],
+        "headers": [(b"content-type", b"application/json"), (b"accept", b"application/json, text/event-stream")],
     }
     with anyio.fail_after(5):
         async with anyio.create_task_group() as requests:
             async with manager.run():
                 requests.start_soon(manager.handle_request, scope, receive, send)
                 await stream_started.wait()
+                await tool_started.wait()
             await stream_closed.wait()
 
 
