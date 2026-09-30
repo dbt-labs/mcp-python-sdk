@@ -13,7 +13,7 @@ import math
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 from http import HTTPStatus
@@ -23,7 +23,7 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import ValidationError
 from sse_starlette import EventSourceResponse
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
@@ -688,6 +688,14 @@ class StreamableHTTPServerTransport:
                 finally:
                     await sse_stream_reader.aclose()
 
+        except ClientDisconnect:
+            # The client is already gone; send a response for ASGI middleware
+            # that expects one, while tolerating a closed socket.
+            logger.warning("Client disconnected during POST request")
+            response = self._create_json_response(None, 499)  # type: ignore[arg-type]
+            with suppress(Exception):
+                await response(scope, receive, send)
+            return
         except Exception as err:
             logger.exception("Error handling POST request")
             response = self._create_error_response(

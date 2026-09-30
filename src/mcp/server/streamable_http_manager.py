@@ -6,6 +6,7 @@ import contextlib
 import logging
 import math
 from collections.abc import AsyncIterator
+from http import HTTPStatus
 from typing import Any, Final
 from uuid import uuid4
 
@@ -198,6 +199,31 @@ class StreamableHTTPSessionManager:
             receive: ASGI receive function
             send: ASGI send function
         """
+        # Stateless GET/DELETE cannot establish a stream or terminate a session.
+        # Reject them before the body limit middleware tries to read a body.
+        if (
+            self.stateless
+            and self._task_group is not None
+            and scope["type"] == "http"
+            and scope["method"] in ("GET", "DELETE")
+        ):
+            method = scope["method"]
+            error = JSONRPCError(
+                jsonrpc="2.0",
+                id="",
+                error=ErrorData(
+                    code=INVALID_REQUEST,
+                    message=f"Method Not Allowed: {method} is not supported in stateless mode",
+                ),
+            )
+            response = Response(
+                content=error.model_dump_json(by_alias=True, exclude_unset=True),
+                status_code=HTTPStatus.METHOD_NOT_ALLOWED,
+                headers={"Allow": "POST"},
+                media_type="application/json",
+            )
+            await response(scope, receive, send)
+            return
         await self.asgi_app(scope, receive, send)
 
     async def _handle_request(
